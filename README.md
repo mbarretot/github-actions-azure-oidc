@@ -1,129 +1,235 @@
-<div align="center">
+# GitHub Actions → Azure App Service con OIDC (sin secretos)
 
-<img src="docs/assets/clean-architecture-logo.png" alt="Clean Architecture logo" width="150" />
+Repositorio de referencia que despliega una API ASP.NET Core (.NET 10) en Azure App Service desde GitHub Actions usando **Workload Identity Federation** (OIDC). El workflow no guarda ningún secreto: GitHub emite un token OIDC de corta duración y Microsoft Entra ID lo intercambia por un token de acceso de Azure.
 
-# .NET Clean Architecture
+La aplicación de ejemplo es una copia de [mbarretot/dotnet-clean-architecture](https://github.com/mbarretot/dotnet-clean-architecture). Solo se despliega el proyecto `src/CleanArchitecture.Presentation`.
 
-**A working catalog, inventory and order API with explicit business rules and testable boundaries.**
+## Qué demuestra
 
-[![CI](https://github.com/mbarretot/dotnet-clean-architecture/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbarretot/dotnet-clean-architecture/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-64748b)](LICENSE)
+- El paso de un login con **client secret** ("Antes") a un login **OIDC** ("Después").
+- Un service principal con el rol **Website Contributor** limitado a una sola Web App, no a la suscripción ni al grupo de recursos.
+- El formato de **subject inmutable** que GitHub usa en los repositorios nuevos y cómo leerlo del log.
+- Cómo `environment:` cambia el subject del token y por qué necesita su propia credencial federada.
+- Los errores más comunes (`id-token: write`, `AADSTS700213`, `AADSTS700212`), con su causa y su solución.
 
-[Use cases](#-use-cases) · [Run](#-run-locally) · [Libraries](#-technology-and-libraries) · [Architecture](#-architecture) · [Guides](#-go-deeper)
+## Antes y después
 
-</div>
-
-An API-first reference to study and adapt, not a project generator, storefront or complete commerce platform. Follow a business operation from HTTP through application handlers and domain rules to PostgreSQL.
-
-## 🎯 Use cases
-
-| Capability | Current behavior |
-|---|---|
-| **Catalog** | Search, filter, sort and paginate products; retrieve cached details. |
-| **Inventory** | Create/update products, set stock and soft-delete; invalidate cached reads. |
-| **Ordering** | Merge duplicate lines, snapshot names/prices, require one currency and reserve stock atomically. |
-| **Customer actions** | Read your orders, pay or cancel before shipment; cancellation releases stock for existing products. |
-| **Fulfillment** | Ship paid orders, then complete shipped orders. |
-
-Reads require authentication. Writes require `products:write` or `orders:write`; fulfillment requires `orders:fulfill`. Customer handlers enforce ownership; invalid transitions and insufficient stock return `409`.
-
-![Order lifecycle, reservation and cancellation rules](docs/assets/order-lifecycle.svg)
-
-**Scope:** payment and shipment are state changes, not external integrations. No refunds, carrier, cart or storefront. Domain events run in process after saving; there is no durable outbox or broker.
-
-## 🚀 Run locally
-
-**Prerequisites:** [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) ([pinned version](global.json)), Docker, and [Aspire CLI](https://aspire.dev/get-started/install-cli/) for the recommended path.
-
-```bash
-aspire run
-```
-
-Starts API, PostgreSQL, Redis and Keycloak. Open `http://localhost:5236/scalar/v1`; the printed Aspire dashboard URL provides telemetry. Startup applies pending migrations.
-
-Alternatively, use Compose:
-
-```bash
-docker compose up --build
-```
-
-Open `http://localhost:8080/scalar/v1`. Both options expose Keycloak at `http://localhost:8180`; do not run them simultaneously.
-
-In Scalar, sign in as **alice/alice**, select write/fulfillment scopes, create a product with stock `10`, order `2`, then pay → ship → complete, or cancel before shipment. [Request bodies, routes and token setup](docs/api-guide.md).
-
-> [!WARNING]
-> Committed credentials and HTTP identity settings are **development-only**. Never reuse them in production. API-only startup needs a PostgreSQL connection and JWT configuration.
-
-## 🧰 Technology and libraries
-
-ASP.NET Core 10 Minimal APIs expose versioned contracts. PostgreSQL stores aggregates; Keycloak supplies local OIDC tokens. Aspire **13.5.4** or Compose connects services; Terraform defines optional Azure infrastructure.
-
-| Library | Description | Purpose |
+| | Antes (client secret) | Después (OIDC) |
 |---|---|---|
-| <img src="docs/assets/logos/csharp-original.svg" width="28" height="28" align="absmiddle" alt="C# logo" /> [C#](https://learn.microsoft.com/dotnet/csharp/) | Language | Typed, nullable-aware domain and application code |
-| <img src="docs/assets/logos/dotnet-original.svg" width="28" height="28" align="absmiddle" alt=".NET logo" /> [.NET 10 / ASP.NET Core](https://learn.microsoft.com/aspnet/core/) | Runtime and web framework | Minimal APIs with versioned contracts |
-| <img src="docs/assets/logos/postgresql-original.svg" width="28" height="28" align="absmiddle" alt="PostgreSQL mark; EF Core and Npgsql share this database symbol" /> [EF Core / Npgsql](https://www.npgsql.org/efcore/) | Object-relational mapping | PostgreSQL persistence and migrations |
-| <img src="docs/assets/logos/category-validation.svg" width="28" height="28" align="absmiddle" alt="Generic validation icon" /> [FluentValidation †](https://docs.fluentvalidation.net/) | Request validation | Reject invalid commands before handlers |
-| <img src="docs/assets/logos/redis-original.svg" width="28" height="28" align="absmiddle" alt="Redis logo; not HybridCache branding" /> [HybridCache / Redis](https://learn.microsoft.com/aspnet/core/performance/caching/hybrid) | Two-tier read cache | Local L1, optional Redis L2 |
-| <img src="docs/assets/logos/category-versioning.svg" width="28" height="28" align="absmiddle" alt="Generic versioning icon" /> [Asp.Versioning †](https://github.com/dotnet/aspnet-api-versioning) | API version selection | Query/header version contracts |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/logos/scalar-dark.svg" /><img src="docs/assets/logos/scalar-light.svg" width="28" height="28" align="absmiddle" alt="Scalar logo" /></picture> [Scalar](https://scalar.com/) | Interactive API reference | Explore OpenAPI and authenticate |
-| <img src="docs/assets/logos/opentelemetry-original.svg" width="28" height="28" align="absmiddle" alt="OpenTelemetry telescope mark" /> [OpenTelemetry](https://opentelemetry.io/) | Telemetry instrumentation | Correlate logs, traces and metrics |
-| <img src="docs/assets/logos/dotnet-original.svg" width="28" height="28" align="absmiddle" alt=".NET shared platform mark; not Aspire branding" /> [Aspire *](https://aspire.dev/) | Local orchestration | Connect services and diagnostics |
-| <img src="docs/assets/logos/xunit.svg" width="28" height="28" align="absmiddle" alt="Unmodified xUnit.net logo" /> [xUnit v3](https://xunit.net/) | Test runner | Execute unit and integration suites |
-| <img src="docs/assets/logos/category-testing.svg" width="28" height="28" align="absmiddle" alt="Generic testing icon" /> [Shouldly / NSubstitute †](https://github.com/shouldly/shouldly) | Assertions and test doubles | Readable expectations; isolate collaborators |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/logos/testcontainers-icon-dark.svg" /><img src="docs/assets/logos/testcontainers-icon.svg" width="28" height="28" align="absmiddle" alt="Testcontainers mark" /></picture> [Testcontainers](https://dotnet.testcontainers.org/) | Container-based fixtures | Test against real PostgreSQL |
-| <img src="docs/assets/logos/category-testing.svg" width="28" height="28" align="absmiddle" alt="Generic testing icon" /> [Respawn / NetArchTest †](https://github.com/jbogard/Respawn) | Database reset and architecture rules | Isolate tests; enforce layer boundaries |
-| <img src="docs/assets/logos/docker-original.svg" width="28" height="28" align="absmiddle" alt="Docker logo" /> [Docker / Compose](https://docs.docker.com/compose/) | Containers | Run the API and its dependencies locally |
-| <img src="docs/assets/logos/azure-original.svg" width="28" height="28" align="absmiddle" alt="Azure logo" /> [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/) | Cloud hosting | Optional production deployment target |
-| <img src="docs/assets/logos/terraform-original.svg" width="28" height="28" align="absmiddle" alt="Terraform logo" /> [Terraform](https://developer.hashicorp.com/terraform) | Infrastructure as code | Define the optional Azure infrastructure |
+| Workflow | [`docs/workflows-antes/deploy-client-secret.yml`](docs/workflows-antes/deploy-client-secret.yml) (solo referencia, no se ejecuta) | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
+| Secretos en GitHub | `AZURE_CLIENT_SECRET` + tres IDs | Solo tres IDs (no son sensibles; se guardan como secretos para que aparezcan enmascarados en los logs) |
+| Credencial en Entra ID | Client secret con fecha de caducidad | Credencial federada: confía en un emisor, un subject y una audiencia concretos |
+| Rotación | Manual, antes de que caduque | No hay nada que rotar: cada token dura 5 minutos |
 
-† Neutral category icon, not dedicated library branding. * Shared .NET platform mark. Database/cache marks identify PostgreSQL/Redis, not every library in their row. [Asset sources and notices](docs/assets/logos/README.md).
+El cambio en el workflow se reduce a dos piezas:
 
-Commands and queries use an **in-house mediator**, not MediatR: logging → validation → handler. Typed `Result<T>` failures become ProblemDetails responses. [Package pins](Directory.Packages.props) are authoritative; grouped test-library links: [NSubstitute](https://nsubstitute.github.io/), [NetArchTest](https://github.com/BenMorris/NetArchTest).
+```yaml
+permissions:
+  id-token: write   # permite al job pedir un token OIDC a GitHub
+  contents: read
 
-## 📐 Architecture
+# ...
 
-### 🧱 Code dependencies
-
-The core references neither Infrastructure nor Presentation. Application consumes repository contracts; Infrastructure implements them; Presentation composes the API.
-
-![Compile-time dependencies across Clean Architecture layers](docs/assets/architecture-layers.svg)
-
-| Layer | Responsibility |
-|---|---|
-| Presentation | HTTP, authentication and composition |
-| Application | Use cases, validation and event handlers |
-| Domain | Aggregates, value objects and business rules |
-| Infrastructure | Persistence, repositories, cache and current user |
-| SharedKernel | Results, entities and messaging primitives |
-
-Architecture tests enforce reference boundaries and conventions. Order lines store product IDs plus purchase-time snapshots, not mutable catalog navigation. [Full references and request sequence](docs/development-guide.md#project-dependencies).
-
-### 🐳 Local runtime
-
-![API runtime with identity, persistence, cache and telemetry](docs/assets/runtime-topology.svg)
-
-Runtime arrows describe interactions, not project references. AppHost orchestrates services; ServiceDefaults configures telemetry and resilience. Redis is optional outside orchestrators; Compose has no Aspire dashboard.
-
-**Palette:** indigo = delivery/client; blue = application/API; teal = domain/state; amber = infrastructure/external services; slate = shared/platform. Cancellation uses rose as a terminal exception. Figures adapt to light/dark themes.
-
-## ✅ Quality and delivery
-
-Run from the repository root; integration tests require Docker:
-
-```bash
-dotnet build CleanArchitecture.slnx
-dotnet test CleanArchitecture.slnx
-dotnet format CleanArchitecture.slnx --verify-no-changes
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 ```
 
-CI checks build, tests, formatting, API snapshots, architecture, vulnerabilities and infrastructure. Required coverage is **85% line / 80% branch**; mutation score **60%**. These are gates, not claimed measurements. [Actual CI results and artifacts](https://github.com/mbarretot/dotnet-clean-architecture/actions/workflows/ci.yml).
+En lugar de:
 
-Successful `main` CI publishes signed GHCR images with SBOM/provenance. **Azure rollout is manual.** Terraform does not provision Keycloak or configure JWT; production requires identity, secrets, networking and a migration strategy.
+```yaml
+      - name: Azure login (client secret)
+        uses: azure/login@v3
+        with:
+          creds: >-
+            {"clientId":"${{ secrets.AZURE_CLIENT_ID }}",
+             "clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}",
+             "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+             "tenantId":"${{ secrets.AZURE_TENANT_ID }}"}
+```
 
-## 📚 Go deeper
+## Cómo reproducirlo
 
-- [API guide](docs/api-guide.md): endpoints, example requests, local tokens and production identity.
-- [Development guide](docs/development-guide.md): dependencies, test/coverage/load commands, signed images and Azure limitations.
-- [Architecture decisions](docs/adr/README.md): rationale, alternatives and consequences.
-- [HTTP collection](src/CleanArchitecture.Presentation/CleanArchitecture.Presentation.http): runnable API requests.
+Requisitos: Azure CLI con sesión iniciada, GitHub CLI (`gh`) y un fork o copia de este repositorio.
+
+### 1. Infraestructura
+
+```bash
+SUB="<id-de-tu-suscripcion>"
+RG="rg-github-oidc-demo"
+LOCATION="centralus"
+PLAN="asp-github-oidc-demo"
+APP="github-oidc-demo-$RANDOM"          # el nombre debe ser único en *.azurewebsites.net
+REPO="<owner>/<repo>"
+
+az account set --subscription "$SUB"
+az group create -n "$RG" -l "$LOCATION"
+az appservice plan create -n "$PLAN" -g "$RG" -l "$LOCATION" --is-linux --sku F1
+az webapp create -n "$APP" -g "$RG" -p "$PLAN" --runtime "DOTNETCORE:10.0"
+
+# La app aplica migraciones de PostgreSQL al arrancar. Sin base de datos, se desactivan:
+az webapp config appsettings set -n "$APP" -g "$RG" \
+  --settings Database__ApplyMigrationsOnStartup=false
+```
+
+El plan F1 (gratuito) no está disponible en todas las regiones ni para todas las suscripciones. Si `az appservice plan create` responde `Operation cannot be completed without additional quota`, prueba otra región.
+
+Después, cambia `AZURE_WEBAPP_NAME` en `.github/workflows/deploy.yml` por el valor de `$APP`.
+
+### 2. App registration, service principal y rol
+
+```bash
+APP_ID=$(az ad app create --display-name github-actions-azure-oidc \
+  --sign-in-audience AzureADMyOrg --query appId -o tsv)
+SP_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv)
+WEBAPP_ID=$(az webapp show -n "$APP" -g "$RG" --query id -o tsv)
+
+az role assignment create \
+  --assignee-object-id "$SP_ID" --assignee-principal-type ServicePrincipal \
+  --role "Website Contributor" --scope "$WEBAPP_ID"
+```
+
+`Website Contributor` con alcance en la Web App basta para que `azure/webapps-deploy` publique el paquete. El pipeline no puede crear ni borrar otros recursos.
+
+### 3. Credencial federada
+
+Primero consulta el prefijo real del subject de tu repositorio:
+
+```bash
+gh api "repos/$REPO/actions/oidc/customization/sub"
+# {"use_default":true,"use_immutable_subject":true,
+#  "sub_claim_prefix":"repo:<owner>@<owner_id>/<repo>@<repo_id>"}
+```
+
+Con ese prefijo, crea la credencial para la rama `main`:
+
+```bash
+PREFIX=$(gh api "repos/$REPO/actions/oidc/customization/sub" --jq .sub_claim_prefix)
+
+cat > fic-main.json <<EOF
+{
+  "name": "gh-main-branch",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "$PREFIX:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+az ad app federated-credential create --id "$APP_ID" --parameters fic-main.json
+```
+
+### 4. Secretos de GitHub (solo identificadores)
+
+```bash
+gh secret set AZURE_CLIENT_ID       -R "$REPO" -b "$APP_ID"
+gh secret set AZURE_TENANT_ID       -R "$REPO" -b "$(az account show --query tenantId -o tsv)"
+gh secret set AZURE_SUBSCRIPTION_ID -R "$REPO" -b "$SUB"
+```
+
+Ninguno de los tres valores permite autenticarse por sí solo. Se guardan como secretos para que GitHub los enmascare (`***`) en los logs de un repositorio público. También podrían ser variables (`vars.*`).
+
+### 5. Desplegar y comprobar
+
+```bash
+gh workflow run deploy.yml -R "$REPO" --ref main
+curl -i "https://$APP.azurewebsites.net/alive"   # 200 Healthy
+```
+
+La primera petición puede tardar más de un minuto: el plan F1 no tiene Always On y la app arranca en frío.
+
+## Subject inmutable: el detalle que rompe los tutoriales
+
+La mayoría de las guías usan un subject como este:
+
+```text
+repo:<owner>/<repo>:ref:refs/heads/main
+```
+
+Los repositorios creados después del **15 de julio de 2026** reciben por defecto **subjects inmutables**, que incluyen los IDs numéricos del propietario y del repositorio:
+
+```text
+repo:<owner>@<owner_id>/<repo>@<repo_id>:ref:refs/heads/main
+```
+
+Entra ID compara el subject carácter por carácter. Si la credencial federada usa el formato antiguo, el login falla con `AADSTS700213` aunque el job se ejecute en `main`.
+
+**No escribas el subject a mano: cópialo del log.** `azure/login@v3` imprime el token que presenta:
+
+```text
+Federated token details:
+ issuer - https://token.actions.githubusercontent.com
+ subject claim - repo:<owner>@<owner_id>/<repo>@<repo_id>:ref:refs/heads/main
+ audience - api://AzureADTokenExchange
+```
+
+La línea `subject claim - …` es exactamente lo que debe ir en el campo **Subject** de la credencial federada.
+
+**Renombrar el repositorio cambia el subject.** Los IDs numéricos no cambian, pero el nombre sigue formando parte del subject. Después de renombrar este repositorio, la credencial con el nombre anterior dejó de coincidir (`AADSTS700213`) y hubo que actualizarla con el nombre nuevo.
+
+## `environment:` cambia el subject
+
+Si el job declara un entorno:
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+```
+
+el subject deja de contener la rama:
+
+```text
+repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:production
+```
+
+La credencial de `main` ya no sirve, aunque el job siga ejecutándose en `main`. Hace falta una segunda credencial federada:
+
+```bash
+cat > fic-env.json <<EOF
+{
+  "name": "gh-env-production",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "$PREFIX:environment:production",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+az ad app federated-credential create --id "$APP_ID" --parameters fic-env.json
+```
+
+Este repositorio tiene las dos credenciales: `gh-main-branch` y `gh-env-production`. Ten en cuenta que referenciar `environment: production` crea el entorno en GitHub automáticamente, pero **sin reglas de protección**. Si quieres aprobaciones manuales, configúralas en *Settings → Environments*.
+
+## Errores comunes
+
+| Error | Causa | Solución |
+|---|---|---|
+| `Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable` / `Please make sure to give write permissions to id-token in the workflow` | Falta `permissions: id-token: write`. Sin ese permiso, el runner no puede pedir el token OIDC. | Añade `id-token: write` y `contents: read`. Al declarar `permissions`, el resto de permisos del `GITHUB_TOKEN` pasan a `none`. |
+| `AADSTS700213: No matching federated identity record found for presented assertion subject '…'` | El subject del token no coincide con ninguna credencial federada: formato antiguo frente a inmutable, otra rama, un `environment:` o un repositorio renombrado. | Copia el subject de la línea `subject claim - …` del log de `azure/login` y crea o actualiza la credencial federada. |
+| `AADSTS700212: No matching federated identity record found for presented assertion audience '…'` | La audiencia del token no coincide con `audiences` de la credencial. | Usa la audiencia por defecto `api://AzureADTokenExchange` (no pases `audience:` a `azure/login` salvo que la credencial use otra). |
+| `AADSTS70025: The client '***' has no configured federated identity credentials` | La credencial federada se acaba de crear y aún no se ha propagado. | Espera uno o dos minutos y vuelve a ejecutar el job. |
+
+Los cambios en credenciales federadas pueden tardar en propagarse. En este laboratorio, un job falló con `AADSTS700213` un minuto después de que otro con el mismo subject hubiera funcionado; el reintento posterior funcionó.
+
+## Estructura relevante
+
+```text
+.github/workflows/deploy.yml                    # workflow activo (OIDC)
+docs/workflows-antes/deploy-client-secret.yml   # workflow anterior (client secret), solo referencia
+src/CleanArchitecture.Presentation/             # API que se despliega
+```
+
+## Documentación oficial
+
+- GitHub: [OpenID Connect en GitHub Actions](https://docs.github.com/en/actions/concepts/security/openid-connect)
+- GitHub: [Configurar OpenID Connect en Azure](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)
+- GitHub Changelog: [Immutable subject claims for GitHub Actions OIDC tokens](https://github.blog/changelog/2026-04-23-immutable-subject-claims-for-github-actions-oidc-tokens)
+- Microsoft Learn: [Workload identity federation](https://learn.microsoft.com/entra/workload-id/workload-identity-federation)
+- Microsoft Learn: [Configurar una app para confiar en un proveedor de identidad externo](https://learn.microsoft.com/entra/workload-id/workload-identity-federation-create-trust)
+- Microsoft Learn: [Desplegar en App Service con GitHub Actions](https://learn.microsoft.com/azure/app-service/deploy-github-actions)
+- [`azure/login`](https://github.com/Azure/login)
+
+## Licencia
+
+[MIT](LICENSE), igual que el proyecto original.
