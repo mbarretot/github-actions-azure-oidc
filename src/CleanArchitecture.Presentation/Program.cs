@@ -24,7 +24,10 @@ var app = builder.Build();
 
 var isRunningAsTheEntryPoint = Assembly.GetEntryAssembly() == typeof(Program).Assembly;
 
-if (isRunningAsTheEntryPoint)
+// Lets a host without a database (e.g. a deployment smoke environment) skip startup migrations.
+var applyMigrationsOnStartup = app.Configuration.GetValue("Database:ApplyMigrationsOnStartup", defaultValue: true);
+
+if (isRunningAsTheEntryPoint && applyMigrationsOnStartup)
 {
     await app.Services.ApplyPendingMigrationsAsync();
 }
