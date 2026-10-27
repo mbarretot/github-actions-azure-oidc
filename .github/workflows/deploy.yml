@@ -3,20 +3,16 @@ name: Deploy to Azure App Service
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: wif-lab-ca-25229
+  AZURE_WEBAPP_NAME: github-oidc-demo-6608
   PROJECT_PATH: src/CleanArchitecture.Presentation/CleanArchitecture.Presentation.csproj
-
-permissions:
-  id-token: write   # lets the job request a GitHub OIDC token
-  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: actions/checkout@v7
 
@@ -27,20 +23,14 @@ jobs:
       - name: Publish
         run: dotnet publish "$PROJECT_PATH" -c Release -o ./publish
 
-      # Lab-only: prints the decoded claims of the OIDC token (never the token itself).
-      - name: Show OIDC token claims
-        run: |
-          TOKEN=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)
-          echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null \
-            | jq '{iss, aud, sub, repository, repository_owner, ref, ref_type, environment, workflow_ref, job_workflow_ref, event_name, runner_environment, iat, nbf, exp}'
-
-      - name: Azure login (OIDC)
+      - name: Azure login (client secret)
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: >-
+            {"clientId":"${{ secrets.AZURE_CLIENT_ID }}",
+             "clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}",
+             "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+             "tenantId":"${{ secrets.AZURE_TENANT_ID }}"}
 
       - name: Deploy
         uses: azure/webapps-deploy@v3
